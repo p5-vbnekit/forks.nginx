@@ -6468,8 +6468,13 @@ ngx_http_upstream_bind_set_slot(ngx_conf_t *cf, ngx_command_t *cmd,
             return NGX_CONF_ERROR;
         }
 
+#if (NGX_HAVE_INET6)
+        rc = ngx_parse_addr_v6scope_port(cf->pool, local->addr, value[1].data,
+                                         value[1].len);
+#else
         rc = ngx_parse_addr_port(cf->pool, local->addr, value[1].data,
                                  value[1].len);
+#endif
 
         switch (rc) {
         case NGX_OK:

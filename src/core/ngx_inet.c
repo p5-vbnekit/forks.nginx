@@ -8,6 +8,10 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 
+#if (NGX_HAVE_INET6)
+#include <net/if.h>
+#endif
+
 
 static ngx_int_t ngx_parse_unix_domain_url(ngx_pool_t *pool, ngx_url_t *u);
 static ngx_int_t ngx_parse_inet_url(ngx_pool_t *pool, ngx_url_t *u);
@@ -678,6 +682,106 @@ ngx_parse_addr_port(ngx_pool_t *pool, ngx_addr_t *addr, u_char *text,
 
     return NGX_OK;
 }
+
+
+#if (NGX_HAVE_INET6)
+ngx_int_t
+ngx_parse_addr_v6scope_port(ngx_pool_t *pool, ngx_addr_t *addr, u_char *text, size_t len)
+{
+    ngx_int_t result = NGX_ERROR;
+
+    u_char *buffer;
+    ngx_int_t port = -1;
+    u_char *text_end;
+    size_t scope_size;
+    u_char *scope_end;
+    u_char *last_brase = NULL;
+    u_char *port_begin;
+    u_char *scope_begin;
+    u_char *address_begin;
+    ngx_int_t signed_scope_number;
+    uint32_t unsigned_scope_number = 0;
+
+    if (! (pool && addr && text)) return NGX_DECLINED;
+    if (! (3 < len)) return NGX_DECLINED;
+
+    text_end = text + len;
+    if (NULL != ngx_strlchr(text, text_end, 0)) return NGX_DECLINED;
+
+    if ('[' == text[0]) {
+        if (! (5 < len)) return NGX_DECLINED;
+        last_brase = ngx_strlchr(text + 1, text_end, ']');
+        if (NULL == last_brase) return NGX_DECLINED;
+        if (! (text_end > (last_brase + 2))) return NGX_DECLINED;
+        if (NULL != ngx_strlchr(last_brase + 1, text_end, ']')) return NGX_DECLINED;
+        address_begin = text + 1;
+    }
+
+    else {
+        if (NULL != ngx_strlchr(text, text_end, ']')) return NGX_DECLINED;
+        address_begin = text;
+    }
+
+    if (NULL != ngx_strlchr(text + 1, text_end - 1, '[')) return NGX_DECLINED;
+
+    scope_begin = ngx_strlchr(text, text_end, '%');
+    if (NULL == scope_begin) return ngx_parse_addr_port(pool, addr, text, len);
+
+    if (! (scope_begin > (address_begin + 2))) return NGX_DECLINED;
+    if (! (text_end > (scope_begin + ((NULL == last_brase) ? 1 : 4)))) return NGX_DECLINED;
+    if (NULL != ngx_strlchr(scope_begin + 1, text_end, '%')) return NGX_DECLINED;
+
+    if (NULL == last_brase) {
+        port_begin = ngx_strlchr(scope_begin, text_end, ':');
+        if (NULL == port_begin) scope_end = text_end;
+        else scope_end = port_begin;
+    }
+
+    else {
+        scope_end = last_brase;
+        port_begin = scope_end + 1;
+        if (port_begin == text_end) port_begin = NULL;
+        else if (':' != port_begin[0]) return NGX_DECLINED;
+    }
+
+    scope_size = scope_end - scope_begin;
+    if (! (1 < scope_size)) return NGX_DECLINED;
+
+    if (port_begin != NULL) {
+        size_t const size = text_end - port_begin;
+        if (! (1 < size)) return NGX_DECLINED;
+        port = ngx_atoi(port_begin + 1, size - 1);
+        if (! ((0 < port) && (65536 > port))) return NGX_DECLINED;
+    }
+
+    result = ngx_parse_addr(pool, addr, address_begin, scope_begin - address_begin);
+    if (NGX_OK != result) return result;
+    if (AF_INET6 != addr->sockaddr->sa_family) return NGX_DECLINED;
+    if (0 < port) ngx_inet_set_port(addr->sockaddr, port);
+
+    signed_scope_number = ngx_atoi(scope_begin + 1, scope_size - 1);
+    if (0 < signed_scope_number) {
+        if (UINT32_MAX < signed_scope_number) unsigned_scope_number = (uint32_t)signed_scope_number;
+    }
+
+    else if (-1 == signed_scope_number) {
+        buffer = ngx_alloc(scope_size, pool->log);
+        if (buffer == NULL) {
+            ngx_log_error(NGX_LOG_EMERG, pool->log, ngx_errno, "ngx_parse_addr_v6scope_port: failed to allocate temporary buffer");
+            return NGX_ERROR;
+        }
+        ngx_memcpy(buffer, scope_begin + 1, scope_size - 1);
+        buffer[scope_size - 1] = 0;
+        unsigned_scope_number = if_nametoindex((char const *)buffer);
+        ngx_free(buffer);
+    }
+
+    if (! (0 < unsigned_scope_number)) return NGX_DECLINED;
+
+    ((struct sockaddr_in6 *)addr->sockaddr)->sin6_scope_id = unsigned_scope_number;
+    return NGX_OK;
+}
+#endif
 
 
 ngx_int_t
